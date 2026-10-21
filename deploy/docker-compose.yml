@@ -1,0 +1,14 @@
+services:
+  portal:
+    image: ${PORTAL_IMAGE:-portal:local}
+    container_name: ${PORTAL_CONTAINER_NAME:-portal}
+    restart: unless-stopped
+    env_file:
+      - ${PORTAL_ENV_FILE:-portal.env}
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    external: true
+    name: ${PORTAL_DOCKER_NETWORK:-sub2api-network}

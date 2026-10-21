@@ -1,0 +1,5 @@
+deploy/portal.env
+deploy/.env
+*.env
+!deploy/portal.env.example
+*.tar
