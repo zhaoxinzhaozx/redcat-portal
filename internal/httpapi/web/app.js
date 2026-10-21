@@ -123,8 +123,20 @@ function askDownload(button) {
   box.querySelector("#no").onclick = () => box.remove()
 }
 
+function winnerText(item) {
+  if (item.phase !== "announced") return "中奖人：未公布"
+  if (!item.has_winner || !(item.winners || []).length) return "中奖人：本次没有中奖用户"
+  return "中奖人：" + item.winners.map((email) => escapeHTML(email)).join("、")
+}
+
+function clearWin() {
+  document.querySelectorAll(".celebrate").forEach((node) => node.remove())
+}
+
 async function activityList() {
-  app.innerHTML = "<h1>抽奖活动</h1><p class='meta'>这里只显示当前可以查看的活动。</p>"
+  clearWin()
+  app.innerHTML = `<div class="row"><h1>抽奖活动</h1><button type="button" class="ghost" id="refresh">刷新</button></div><p class="meta">这里只显示当前可以查看的活动。</p>`
+  document.querySelector("#refresh").onclick = () => activityList()
   let data
   try { data = await api("/api/activities") } catch (error) { app.insertAdjacentHTML("beforeend", `<p>${error.message}</p>`); return }
   if (!data.activities.length) {
@@ -135,12 +147,13 @@ async function activityList() {
     const card = document.createElement("a")
     card.className = "card"
     card.href = `${base}/activities/${item.id}`
-    card.innerHTML = `<p class="badge">${phaseText(item.phase)}</p><h2>${escapeHTML(item.title)}</h2><p>参与人数 ${item.participant_count}</p><p class="meta">奖励 ${money(item.reward_amount)} 元 · 公布 ${when(item.announce_at)}</p>`
+    card.innerHTML = `<p class="badge">${phaseText(item.phase)}</p><h2>${escapeHTML(item.title)}</h2><p>参与人数 ${item.participant_count}</p><p>${winnerText(item)}</p><p class="meta">奖励 ${money(item.reward_amount)} 元 · 公布 ${when(item.announce_at)}</p>`
     app.appendChild(card)
   }
 }
 
 async function activityDetail(id) {
+  clearWin()
   app.innerHTML = "<p class='meta'>正在读取活动</p>"
   let item
   try { item = await api("/api/activities/" + id) } catch (error) {
@@ -158,14 +171,11 @@ async function activityDetail(id) {
   else if (item.can_claim) actions.innerHTML = `<button id="claim">立即领取</button>`
   else if (item.claimed) actions.innerHTML = `<button class="ghost" disabled>已领取</button>`
 
-  let winner = ""
-  if (item.phase === "announced") {
-    winner = item.has_winner
-      ? `<section class="card"><h2>中奖用户</h2><ul>${(item.winners || []).map((email) => `<li>${escapeHTML(email)}</li>`).join("")}</ul></section>`
-      : `<p class="winner">本次活动没有产生中奖用户</p>`
-  }
+  const winner = item.phase === "announced" && item.has_winner
+    ? `<section class="card"><h2>中奖人</h2><ul class="winner-list">${(item.winners || []).map((email) => `<li>${escapeHTML(email)}</li>`).join("")}</ul></section>`
+    : `<p class="winner">${winnerText(item)}</p>`
   app.innerHTML = `
-    <p class="meta"><a href="${base}/activities">活动列表</a> · ${phaseText(item.phase)}</p>
+    <div class="row"><p class="meta"><a href="${base}/activities">活动列表</a> · ${phaseText(item.phase)}</p><button type="button" class="ghost" id="refresh">刷新</button></div>
     <h1>${escapeHTML(item.title)}</h1>
     <p>${escapeHTML(item.body)}</p>
     <section class="card"><p class="meta">参与人数</p><p class="count">${item.participant_count}</p></section>
@@ -173,6 +183,8 @@ async function activityDetail(id) {
     ${winner}
   `
   app.appendChild(actions)
+  document.querySelector("#refresh").onclick = () => activityDetail(id)
+  if (item.can_claim) showWin()
   const join = document.querySelector("#join")
   if (join) join.onclick = async () => {
     join.disabled = true
@@ -185,6 +197,24 @@ async function activityDetail(id) {
     try { await api(`/api/activities/${id}/claim`, { method: "POST" }); activityDetail(id) }
     catch (error) { claim.disabled = false; actions.insertAdjacentHTML("beforeend", `<p>${escapeHTML(error.message)}</p>`) }
   }
+}
+
+function showWin() {
+  document.querySelectorAll(".celebrate").forEach((node) => node.remove())
+  const layer = document.createElement("div")
+  layer.className = "celebrate"
+  layer.innerHTML = `
+    <section class="win-card">
+      <span class="spark"></span><span class="spark"></span><span class="spark"></span>
+      <span class="spark"></span><span class="spark"></span><span class="spark"></span>
+      <p class="win-kicker">恭喜中奖</p>
+      <h2>这份奖励属于你</h2>
+      <p>金额还没有进入余额。点「立即领取」后就会到账。</p>
+      <p class="row" style="justify-content:center"><button type="button" id="close-win">去领取</button></p>
+    </section>
+  `
+  document.body.appendChild(layer)
+  layer.querySelector("#close-win").onclick = () => layer.remove()
 }
 
 async function adminList() {
@@ -221,7 +251,7 @@ async function adminEdit(id) {
   }
   const selected = new Set((item.selected_user_ids || []).map(Number))
   const picks = (item.participants || []).map((person) => `<label class="check"><input type="checkbox" name="winner" value="${person.user_id}" ${selected.has(Number(person.user_id)) ? "checked" : ""} ${item.drawn ? "disabled" : ""}> ${escapeHTML(person.email)}</label>`).join("")
-  const drawnNames = (item.winners || []).map((winner) => `${escapeHTML(winner.email)}${winner.claimed ? "（已领取）" : ""}`).join("、")
+  const grants = (item.winners || []).map((winner) => `<div class="row grant-row"><span>${escapeHTML(winner.email)}</span><span>${winner.claimed ? "已领取" : "未领取"}</span>${winner.claimed ? "" : `<button type="button" data-grant="${winner.user_id}">领取</button>`}</div>`).join("")
   app.innerHTML = `
     <p class="meta"><a href="${base}/admin">全部活动</a></p>
     <h1>${id ? "编辑活动" : "新建活动"}</h1>
@@ -238,7 +268,8 @@ async function adminEdit(id) {
       <p id="form-error"></p>
     </form>
     ${id ? `<section class="card"><p class="meta">参与人数</p><p class="count" id="count">${item.participant_count}</p><p class="meta">真实参与 ${item.real_count} 人。加号只增加展示人数。</p><button id="plus" class="plus" ${item.archived ? "disabled" : ""}>+</button></section>
-      <section class="card"><label>指定中奖用户</label><div class="picks">${picks || "<p class='meta'>还没有人参与，暂时不能指定。</p>"}</div><button id="save-winner" class="ghost" ${item.drawn ? "disabled" : ""}>保存选择</button><p class="meta">${drawnNames ? "已开奖：" + drawnNames : "最多勾选中奖人数这么多个。没选满时，公布时从其余真实参与者里随机补足。修改中奖人数后要先保存活动。"}</p></section>
+      <section class="card"><label>指定中奖用户</label><div class="picks">${picks || "<p class='meta'>还没有人参与，暂时不能指定。</p>"}</div>${item.drawn ? "" : `<button id="save-winner" class="ghost">保存选择</button>`}<p class="meta">${item.drawn ? "已经开奖，不能再修改选择。" : "最多勾选中奖人数这么多个。没选满时，公布时从其余真实参与者里随机补足。修改中奖人数后要先保存活动。"}</p></section>
+      ${item.drawn ? `<section class="card"><h2>领取情况</h2>${grants || "<p class='meta'>本次活动没有中奖用户。</p>"}<p class="meta">未领取时，可以代中奖用户领取，奖励会进入该用户余额。</p><p id="grant-error"></p></section>` : ""}
       <section class="card"><button id="archive" class="ghost">归入历史</button><p class="meta">归入历史后，普通用户不再看到这场活动。</p></section>` : ""}
   `
   document.querySelector("#form").onsubmit = async (event) => {
@@ -270,6 +301,19 @@ async function adminEdit(id) {
       saveWinner.textContent = "已保存"
     } catch (error) { saveWinner.textContent = error.message }
   }
+  document.querySelectorAll("[data-grant]").forEach((button) => {
+    button.onclick = async () => {
+      button.disabled = true
+      try {
+        await api(`/api/admin/activities/${id}/grant`, { method: "POST", body: JSON.stringify({ user_id: Number(button.dataset.grant) }) })
+        adminEdit(id)
+      } catch (error) {
+        button.disabled = false
+        const box = document.querySelector("#grant-error")
+        if (box) box.textContent = error.message
+      }
+    }
+  })
   const archive = document.querySelector("#archive")
   if (archive) archive.onclick = async () => {
     await api(`/api/admin/activities/${id}/archive`, { method: "POST" })

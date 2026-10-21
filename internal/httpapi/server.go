@@ -56,6 +56,7 @@ type StoreAPI interface {
 	SetWinners(ctx context.Context, activityID int64, userIDs []int64) error
 	Archive(ctx context.Context, activityID int64) error
 	Claim(ctx context.Context, activityID, userID int64, now time.Time, credit func(amount float64) error) error
+	DrawDue(ctx context.Context, now time.Time) error
 	RechargedAmount(ctx context.Context, userID int64) (float64, error)
 }
 
@@ -158,6 +159,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.adminWinner(w, r, parts[2])
 	case r.Method == http.MethodPost && len(parts) == 4 && parts[0] == "admin" && parts[3] == "archive":
 		s.adminArchive(w, r, parts[2])
+	case r.Method == http.MethodPost && len(parts) == 4 && parts[0] == "admin" && parts[3] == "grant":
+		s.adminGrant(w, r, parts[2])
 	default:
 		writeError(w, http.StatusNotFound, "没有这个接口")
 	}
@@ -182,6 +185,7 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) userActivities(w http.ResponseWriter, r *http.Request) {
+	_ = s.Store.DrawDue(r.Context(), time.Now())
 	items, err := s.Store.ListVisible(r.Context(), time.Now())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "活动列表读取失败")
@@ -195,6 +199,7 @@ func (s *Server) userActivities(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) userActivity(w http.ResponseWriter, r *http.Request, rawID string) {
+	_ = s.Store.DrawDue(r.Context(), time.Now())
 	activity, err := s.loadVisible(r, rawID)
 	if err != nil {
 		writeStoreError(w, err)
@@ -266,6 +271,7 @@ func (s *Server) adminActivities(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, err)
 		return
 	}
+	_ = s.Store.DrawDue(r.Context(), time.Now())
 	items, err := s.Store.ListAdmin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "活动列表读取失败")
@@ -283,6 +289,7 @@ func (s *Server) adminActivity(w http.ResponseWriter, r *http.Request, rawID str
 		writeAuthError(w, err)
 		return
 	}
+	_ = s.Store.DrawDue(r.Context(), time.Now())
 	activity, err := s.Store.Get(r.Context(), mustID(rawID), true)
 	if err != nil {
 		writeStoreError(w, err)
@@ -350,6 +357,29 @@ func (s *Server) adminWinner(w http.ResponseWriter, r *http.Request, rawID strin
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+func (s *Server) adminGrant(w http.ResponseWriter, r *http.Request, rawID string) {
+	if _, err := s.adminUser(r); err != nil {
+		writeAuthError(w, err)
+		return
+	}
+	var body struct {
+		UserID int64 `json:"user_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.UserID == 0 {
+		writeError(w, http.StatusBadRequest, "请选择要领取的中奖用户")
+		return
+	}
+	id := mustID(rawID)
+	err := s.Store.Claim(r.Context(), id, body.UserID, time.Now(), func(amount float64) error {
+		return s.Auth.AddBalance(r.Context(), body.UserID, amount, id, s.Site.Name)
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"claimed": true})
+}
+
 func (s *Server) adminArchive(w http.ResponseWriter, r *http.Request, rawID string) {
 	if _, err := s.adminUser(r); err != nil {
 		writeAuthError(w, err)
@@ -365,7 +395,7 @@ func (s *Server) adminArchive(w http.ResponseWriter, r *http.Request, rawID stri
 func (s *Server) publicActivity(activity store.Activity, userID int64, joined bool, recharged float64) map[string]any {
 	now := time.Now()
 	current := activity.Phase(now)
-	showWinner := current == phase.Announced
+	showWinner := current == phase.Announced && activity.DrawnAt != nil
 	winners := []string{}
 	if showWinner {
 		for _, winner := range activity.Winners {
